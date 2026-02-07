@@ -1,0 +1,318 @@
+================================================================================
+                    VISUAL ODOMETRY - LEARNING NOTES
+================================================================================
+
+Created: February 2025
+Project: github.com/redddddyyyyy/visual-odometry
+
+These notes explain the theory behind the Visual Odometry implementation.
+Refer back to these whenever you need a refresher.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+1. What is Visual Odometry?
+2. The Essential Matrix
+3. Scale Ambiguity Problem
+4. ORB Features
+5. The VO Pipeline
+6. Key Equations
+7. Interview Questions & Answers
+
+================================================================================
+1. WHAT IS VISUAL ODOMETRY?
+================================================================================
+
+Visual Odometry (VO) = Estimating camera motion from images
+
+Goal: Given a sequence of images, figure out how the camera moved.
+
+Output: Trajectory (sequence of poses)
+        Pose = Position (x, y, z) + Orientation (rotation matrix R)
+
+Applications:
+- Self-driving cars
+- Drones
+- AR/VR headsets
+- Mobile robots
+
+VO vs SLAM:
+- VO = Only estimates motion (local)
+- SLAM = VO + Map building + Loop closure (global)
+
+================================================================================
+2. THE ESSENTIAL MATRIX
+================================================================================
+
+The Essential Matrix (E) encodes the relative pose between TWO camera views.
+
+GEOMETRY:
+---------
+    Time t                     Time t+1
+
+    [Camera 1] ─── moves ────▶ [Camera 2]
+
+      Both cameras see the same 3D point P
+                    * P
+                   / \
+                  /   \
+                 /     \
+                ▼       ▼
+              p1        p2
+           (pixel)   (pixel)
+
+EPIPOLAR CONSTRAINT:
+--------------------
+    p2^T · E · p1 = 0
+
+This equation says: "If p1 and p2 correspond to the same 3D point
+viewed from two cameras, this equation equals zero."
+
+WHAT'S INSIDE E:
+----------------
+    E = [t]x · R
+
+Where:
+- R = Rotation matrix (3×3) — how much did the camera rotate?
+- t = Translation vector (3×1) — which direction did the camera move?
+- [t]x = Skew-symmetric matrix of t
+
+Skew-symmetric matrix [t]x for t = [tx, ty, tz]:
+
+    [t]x = |  0   -tz   ty |
+           |  tz   0   -tx |
+           | -ty   tx   0  |
+
+HOW TO USE E:
+-------------
+1. Find matching points (p1i, p2i) between two frames
+2. Estimate E from matches (5-point or 8-point algorithm)
+3. Decompose E into R and t using SVD
+4. Now you know camera motion!
+
+ESSENTIAL vs FUNDAMENTAL MATRIX:
+--------------------------------
+- Essential Matrix (E): Uses NORMALIZED coordinates (multiply by K^-1 first)
+- Fundamental Matrix (F): Uses PIXEL coordinates directly
+- Relationship: E = K^T · F · K  (where K = camera intrinsic matrix)
+
+================================================================================
+3. SCALE AMBIGUITY PROBLEM
+================================================================================
+
+PROBLEM: A single camera CANNOT measure absolute distance/scale.
+
+WHY:
+----
+    Scenario A:                     Scenario B:
+    Small object, close             Large object, far
+
+    Camera────────*                 Camera────────────────────*
+           1 meter                           10 meters
+
+    Both produce the SAME image!
+
+CONSEQUENCE:
+------------
+- Translation t is only known UP TO SCALE
+- t is normalized: ||t|| = 1
+- Trajectory SHAPE is correct, SIZE is unknown
+
+SOLUTIONS:
+----------
+1. Stereo camera → Known baseline gives scale
+2. IMU sensor → Accelerometer gives metric scale
+3. Known object size → Car height, lane width, etc.
+4. Ground truth alignment → For evaluation (KITTI dataset)
+
+================================================================================
+4. ORB FEATURES
+================================================================================
+
+ORB = Oriented FAST and Rotated BRIEF
+
+WHY ORB FOR VO:
+---------------
+| Property              | Benefit for VO                    |
+|-----------------------|-----------------------------------|
+| Fast                  | Can process 30+ FPS               |
+| Binary descriptor     | Hamming distance = CPU efficient  |
+| Rotation invariant    | Handles camera rotation           |
+| Scale invariant       | Handles forward/backward motion   |
+
+COMPARISON:
+-----------
+- SIFT: Most accurate, but slow and patented
+- SURF: Fast, patented
+- ORB: Fast, free, nearly as good as SIFT
+- FAST+BRIEF: Fastest, less robust
+
+ORB COMPONENTS:
+---------------
+1. FAST detector: Finds corner keypoints quickly
+2. Orientation: Computes dominant orientation for rotation invariance
+3. BRIEF descriptor: 256-bit binary descriptor
+4. Multi-scale: Pyramid for scale invariance
+
+================================================================================
+5. THE VO PIPELINE
+================================================================================
+
+    Frame t              Frame t+1
+       │                     │
+       ▼                     ▼
+┌────────────┐        ┌────────────┐
+│  Detect    │        │  Detect    │
+│  Features  │        │  Features  │
+│   (ORB)    │        │   (ORB)    │
+└─────┬──────┘        └─────┬──────┘
+      │                     │
+      └──────────┬──────────┘
+                 ▼
+        ┌───────────────┐
+        │    Match      │
+        │   Features    │
+        │  (BFMatcher)  │
+        └───────┬───────┘
+                ▼
+        ┌───────────────┐
+        │   RANSAC +    │
+        │  Essential    │
+        │   Matrix      │
+        └───────┬───────┘
+                ▼
+        ┌───────────────┐
+        │   Decompose   │
+        │   E → R, t    │
+        └───────┬───────┘
+                ▼
+        ┌───────────────┐
+        │  Accumulate   │
+        │    Pose       │
+        └───────┬───────┘
+                ▼
+          Trajectory
+
+STEP-BY-STEP:
+-------------
+1. DETECT FEATURES
+   - Use ORB to find keypoints and descriptors in each frame
+   - Typically 1000-2000 features per frame
+
+2. MATCH FEATURES
+   - Compare descriptors between frame t and t+1
+   - Use BFMatcher with Hamming distance for ORB
+   - Apply ratio test to filter bad matches
+
+3. ESTIMATE ESSENTIAL MATRIX
+   - Use cv2.findEssentialMat() with RANSAC
+   - RANSAC removes outlier matches
+   - Need at least 5 good matches (5-point algorithm)
+
+4. RECOVER POSE
+   - Use cv2.recoverPose() to decompose E
+   - Returns R (rotation) and t (translation direction)
+   - Also returns inlier mask
+
+5. ACCUMULATE POSE
+   - Chain transformations: T_total = T_total @ T_current
+   - Build trajectory over time
+
+================================================================================
+6. KEY EQUATIONS
+================================================================================
+
+CAMERA PROJECTION:
+------------------
+    p = K · [R|t] · P
+
+Where:
+- P = 3D point in world (4×1 homogeneous)
+- [R|t] = Extrinsic matrix (3×4)
+- K = Intrinsic matrix (3×3)
+- p = 2D pixel (3×1 homogeneous)
+
+INTRINSIC MATRIX K:
+-------------------
+    K = | fx   0   cx |
+        |  0  fy   cy |
+        |  0   0    1 |
+
+- fx, fy = Focal length in pixels
+- cx, cy = Principal point (usually image center)
+
+EPIPOLAR CONSTRAINT:
+--------------------
+    p2^T · E · p1 = 0      (normalized coordinates)
+    p2^T · F · p1 = 0      (pixel coordinates)
+
+ESSENTIAL MATRIX DECOMPOSITION:
+-------------------------------
+    E = U · diag(1, 1, 0) · V^T    (SVD)
+
+    R = U · W · V^T   or   U · W^T · V^T
+    t = U[:, 2]       or  -U[:, 2]
+
+    Where W = |  0  -1   0 |
+              |  1   0   0 |
+              |  0   0   1 |
+
+POSE CHAINING:
+--------------
+    T_world = T_world @ T_relative
+
+    Where T = | R   t |    (4×4 transformation matrix)
+              | 0   1 |
+
+================================================================================
+7. INTERVIEW QUESTIONS & ANSWERS
+================================================================================
+
+Q1: What is Visual Odometry?
+A1: VO estimates camera motion by analyzing sequential images. It finds
+    corresponding points between frames, computes the geometric relationship,
+    and extracts the rotation and translation that explains the motion.
+
+Q2: What's the difference between Essential and Fundamental matrix?
+A2: Essential matrix works with normalized image coordinates (calibrated camera),
+    while Fundamental matrix works with raw pixel coordinates. They're related
+    by E = K^T · F · K where K is the camera intrinsic matrix.
+
+Q3: Why can't monocular VO estimate scale?
+A3: A single camera can't distinguish between a small nearby object and a
+    large distant object - both produce the same image. So translation is
+    only known up to scale. You need stereo cameras, IMU, or known object
+    sizes to recover metric scale.
+
+Q4: Why use RANSAC with Essential matrix estimation?
+A4: Feature matches often contain outliers (wrong matches). RANSAC
+    (Random Sample Consensus) iteratively fits the model to random subsets
+    and finds the largest set of inliers, making it robust to outliers.
+
+Q5: What is the 5-point algorithm?
+A5: It's the minimal solver for Essential matrix estimation. Given 5
+    corresponding points between two calibrated views, it can compute E.
+    Used inside RANSAC because fewer points = more efficient iterations.
+
+Q6: How do you chain poses over time?
+A6: Each frame gives relative pose T_rel (from frame t to t+1). To get
+    world pose: T_world(t+1) = T_world(t) @ T_rel. This accumulates the
+    trajectory, but also accumulates drift error.
+
+Q7: What causes drift in VO?
+A7: Small errors in each pose estimate accumulate over time. Causes include:
+    - Feature matching errors
+    - Motion blur
+    - Lack of texture
+    - Dynamic objects
+    Solutions: Loop closure (SLAM), IMU fusion, bundle adjustment.
+
+Q8: What's the difference between VO and SLAM?
+A8: VO only estimates local motion (odometry). SLAM adds:
+    - Map building (storing 3D landmarks)
+    - Loop closure (recognizing previously visited places)
+    - Global optimization (correcting accumulated drift)
+
+================================================================================
+END OF NOTES - Good luck with your Visual Odometry project!
+================================================================================
